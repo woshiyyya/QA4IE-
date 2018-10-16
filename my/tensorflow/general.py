@@ -127,7 +127,7 @@ def flatten(tensor, keep):
     return flat
 
 
-def reconstruct(tensor, ref, keep):
+def reconstruct(tensor, ref, keep): # reconstruct(flat_out, args[0], 1)
     ref_shape = ref.get_shape().as_list()
     tensor_shape = tensor.get_shape().as_list()
     ref_stop = len(ref_shape) - keep

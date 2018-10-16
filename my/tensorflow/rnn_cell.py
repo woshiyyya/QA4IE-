@@ -124,7 +124,7 @@ class AttentionCell(RNNCell):
         :param controller: (inputs, prev_state, memory) -> memory_logits
         """
         self._cell = cell
-        self._memory = memory
+        self._memory = memory # u, (Q), [N, M, JX, 2d]
         self._mask = mask
         self._flat_memory = flatten(memory, 2)
         self._flat_mask = flatten(mask, 1)

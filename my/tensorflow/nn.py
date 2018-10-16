@@ -11,8 +11,8 @@ def linear(args, output_size, bias, bias_start=0.0, scope=None, squeeze=False, w
         raise ValueError("`args` must be specified")
     if not nest.is_sequence(args):
         args = [args]
-
-    flat_args = [flatten(arg, 1) for arg in args]
+    # args = [N, M, JX, JQ, 6d], output_size = 1
+    flat_args = [flatten(arg, 1) for arg in args] # [N*M, JX, JQ, 6d]
     if input_keep_prob < 1.0:
         assert is_train is not None
         flat_args = [tf.cond(is_train, lambda: tf.nn.dropout(arg, input_keep_prob), lambda: arg)
@@ -58,9 +58,9 @@ def softsel(target, logits, mask=None, scope=None):
     :return: [..., d], dtype=float
     """
     with tf.name_scope(scope or "Softsel"):
-        a = softmax(logits, mask=mask)
+        a = softmax(logits, mask=mask) # attention weight (softmax performs on -1 dim -> col)
         target_rank = len(target.get_shape().as_list())
-        out = tf.reduce_sum(tf.expand_dims(a, -1) * target, target_rank - 2)
+        out = tf.reduce_sum(tf.expand_dims(a, -1) * target, target_rank - 2) # weighted average
         return out
 
 
@@ -77,6 +77,7 @@ def double_linear_logits(args, size, bias, bias_start=0.0, scope=None, mask=None
 
 def linear_logits(args, bias, bias_start=0.0, scope=None, mask=None, wd=0.0, input_keep_prob=1.0, is_train=None):
     with tf.variable_scope(scope or "Linear_Logits"):
+        # args = [N, M, JX, JQ, 6d]
         logits = linear(args, 1, bias, bias_start=bias_start, squeeze=True, scope='first',
                         wd=wd, input_keep_prob=input_keep_prob, is_train=is_train)
         if mask is not None:
@@ -123,7 +124,9 @@ def get_logits(args, size, bias, bias_start=0.0, scope=None, mask=None, wd=0.0, 
         proj = linear([args[0]], d, False, bias_start=bias_start, scope=scope, wd=wd, input_keep_prob=input_keep_prob,
                       is_train=is_train)
         return sum_logits([proj * args[1]], mask=mask)
-    elif func == 'tri_linear':
+    elif func == 'tri_linear': # Default
+        # u_logits = get_logits([h_aug, u_aug], None, True, wd=config.wd, mask=hu_mask,)
+        # args[0] = args[1] = [N, M, JX, JQ, 2d]
         assert len(args) == 2
         new_arg = args[0] * args[1]
         return linear_logits([args[0], args[1], new_arg], bias, bias_start=bias_start, scope=scope, mask=mask, wd=wd, input_keep_prob=input_keep_prob,
@@ -142,6 +145,9 @@ def highway_layer(arg, bias, bias_start=0.0, scope=None, wd=0.0, input_keep_prob
         out = gate * trans + (1 - gate) * arg
         return out
 
+'''
+    arg = [N, M, JX, di+1]
+'''
 
 def highway_network(arg, num_layers, bias, bias_start=0.0, scope=None, wd=0.0, input_keep_prob=1.0, is_train=None):
     with tf.variable_scope(scope or "highway_network"):
@@ -163,9 +169,23 @@ def conv1d(in_, filter_size, height, padding, is_train=None, keep_prob=1.0, scop
         if is_train is not None and keep_prob < 1.0:
             in_ = dropout(in_, keep_prob, is_train)
         xxc = tf.nn.conv2d(in_, filter_, strides, padding) + bias  # [N*M, JX, W/filter_stride, d]
-        out = tf.reduce_max(tf.nn.relu(xxc), 2)  # [-1, JX, d]
+        out = tf.reduce_max(tf.nn.relu(xxc), 2)  # [-1, JX, d]  (Max-pooling)
         return out
+'''
+    input tensor: [batch, in_height, in_width, in_channels] 
+    filter tensor: [filter_height, filter_width, in_channels, out_channels], 
 
+    1. Extracts image patches -> [batch, out_height, out_width, filter_height * filter_width * in_channels]
+    2. Flattens the filter -> [filter_height * filter_width * in_channels, output_channels]
+    3. Patch tensor * filter tensor
+    
+    Char-cnn treats a sentence as a picture of size (sentence length, word length), each character is a pixel, dc-channels
+    
+    height = 5 
+    filter_size = 100
+    input = [N*M, JX, W, dc] 
+    filter = [1, height, dc, filter_size]
+'''
 
 def multi_conv1d(in_, filter_sizes, heights, padding, is_train=None, keep_prob=1.0, scope=None):
     with tf.variable_scope(scope or "multi_conv1d"):
@@ -178,3 +198,6 @@ def multi_conv1d(in_, filter_sizes, heights, padding, is_train=None, keep_prob=1
             outs.append(out)
         concat_out = tf.concat(outs, 2)
         return concat_out
+'''
+    use multi-kernel for convolution, concate them together. 
+'''

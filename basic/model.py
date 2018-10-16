@@ -96,9 +96,9 @@ class Model(object):
                     Acx = tf.reshape(Acx, [-1, JX, W, dc])
                     Acq = tf.reshape(Acq, [-1, JQ, W, dc])
 
-                    filter_sizes = list(map(int, config.out_channel_dims.split(',')))
-                    heights = list(map(int, config.filter_heights.split(',')))
-                    assert sum(filter_sizes) == dco, (filter_sizes, dco)
+                    filter_sizes = list(map(int, config.out_channel_dims.split(','))) # [100]
+                    heights = list(map(int, config.filter_heights.split(','))) # [5]
+                    assert sum(filter_sizes) == dco, (filter_sizes, dco) # Make sure filter channels = char_cnn_out size
                     with tf.variable_scope("conv"):
                         xx = multi_conv1d(Acx, filter_sizes, heights, "VALID",  self.is_train, config.keep_prob, scope="xx")
                         if config.share_cnn_weights:
@@ -135,7 +135,7 @@ class Model(object):
                     qq = Aq
 
             # exact match
-            if config.use_exact_match:
+            if config.use_exact_match: # TODO: What does it mean?
                 emx = tf.expand_dims(tf.cast(self.emx, tf.float32), -1)
                 xx = tf.concat([xx, emx], 3)  # [N, M, JX, di+1]
                 emq = tf.expand_dims(tf.cast(self.emq, tf.float32), -1)
@@ -160,7 +160,7 @@ class Model(object):
         flat_x_len = flatten(x_len, 0)  # [N * M]
 
         with tf.variable_scope("prepro"):
-            if config.use_fused_lstm:
+            if config.use_fused_lstm: #yes
                 with tf.variable_scope("u1"):
                     fw_inputs = tf.transpose(qq, [1, 0, 2]) #[time_len, batch_size, input_size]
                     bw_inputs = tf.reverse_sequence(fw_inputs, q_len, batch_dim=1, seq_dim=0)
@@ -175,7 +175,7 @@ class Model(object):
                     output = tf.transpose(current_inputs, [1, 0, 2])
                     u = output
                 flat_xx = flatten(xx, 2)  # [N * M, JX, d]
-                if config.share_lstm_weights:
+                if config.share_lstm_weights: # Yes
                     tf.get_variable_scope().reuse_variables()
                     with tf.variable_scope("u1"):
                         fw_inputs = tf.transpose(flat_xx, [1, 0, 2]) #[time_len, batch_size, input_size]
@@ -187,7 +187,7 @@ class Model(object):
                         bw_outputs = tf.reverse_sequence(bw_outputs, flat_x_len, batch_dim=1, seq_dim=0)
                         current_inputs = tf.concat((fw_outputs, bw_outputs), 2)
                         output = tf.transpose(current_inputs, [1, 0, 2])
-                else:
+                else: # No
                     with tf.variable_scope("h1"):
                         fw_inputs = tf.transpose(flat_xx, [1, 0, 2]) #[time_len, batch_size, input_size]
                         bw_inputs = tf.reverse_sequence(fw_inputs, flat_x_len, batch_dim=1, seq_dim=0)
@@ -211,8 +211,8 @@ class Model(object):
                 else:
                     (fw_h, bw_h), _ = bidirectional_dynamic_rnn(cell, cell, xx, x_len, dtype='float', scope='h1')  # [N, M, JX, 2d]
                     h = tf.concat([fw_h, bw_h], 3)  # [N, M, JX, 2d]
-            self.tensor_dict['u'] = u
-            self.tensor_dict['h'] = h
+            self.tensor_dict['u'] = u # hidden state of Q = u
+            self.tensor_dict['h'] = h # hidden state of C = h
 
         # Attention Flow Layer (4th layer on paper)
         with tf.variable_scope("main"):
@@ -224,8 +224,8 @@ class Model(object):
                                            input_keep_prob=self.config.input_keep_prob, is_train=self.is_train)
             else:
                 p0 = attention_layer(config, self.is_train, h, u, h_mask=self.x_mask, u_mask=self.q_mask, scope="p0", tensor_dict=self.tensor_dict)
-                first_cell = d_cell
-            tp0 = p0
+                first_cell = d_cell # a GRU cell with dropout wrapper
+            tp0 = p0 # Output of Attention layer
 
         # Modeling layer (5th layer on paper)
         with tf.variable_scope('modeling_layer'):
@@ -684,21 +684,24 @@ class Model(object):
 
 
 def bi_attention(config, is_train, h, u, h_mask=None, u_mask=None, scope=None, tensor_dict=None):
+    # h = [N, M, JX, 2d], u = [N, JQ, 2d]
+    # h_mask = [N, M, JX], u_mask = [N, JQ]
     with tf.variable_scope(scope or "bi_attention"):
         JX = tf.shape(h)[2]
         M = tf.shape(h)[1]
         JQ = tf.shape(u)[1]
-        h_aug = tf.tile(tf.expand_dims(h, 3), [1, 1, 1, JQ, 1])
-        u_aug = tf.tile(tf.expand_dims(tf.expand_dims(u, 1), 1), [1, M, JX, 1, 1])
-        if h_mask is None:
+        h_aug = tf.tile(tf.expand_dims(h, 3), [1, 1, 1, JQ, 1]) # [N, M, JX, JQ*, 2d]
+        u_aug = tf.tile(tf.expand_dims(tf.expand_dims(u, 1), 1), [1, M, JX, 1, 1]) # [N, M*, JX*, JQ, 2d]
+        if h_mask is None: # No
             hu_mask = None
-        else:
-            h_mask_aug = tf.tile(tf.expand_dims(h_mask, 3), [1, 1, 1, JQ])
-            u_mask_aug = tf.tile(tf.expand_dims(tf.expand_dims(u_mask, 1), 1), [1, M, JX, 1])
-            hu_mask = h_mask_aug & u_mask_aug
+        else: # Yes
+            h_mask_aug = tf.tile(tf.expand_dims(h_mask, 3), [1, 1, 1, JQ]) # [N, M, JX, JQ]
+            u_mask_aug = tf.tile(tf.expand_dims(tf.expand_dims(u_mask, 1), 1), [1, M, JX, 1]) # [N, M, JX, JQ]
+            hu_mask = h_mask_aug & u_mask_aug # mask the position where Q and C both have sentences
 
         u_logits = get_logits([h_aug, u_aug], None, True, wd=config.wd, mask=hu_mask,
-                              is_train=is_train, func=config.logit_func, scope='u_logits')  # [N, M, JX, JQ]
+                              is_train=is_train, func=config.logit_func, scope='u_logits')
+        # u_logits = [N, M, JX, JQ], this is the similarity matrix!
         u_a = softsel(u_aug, u_logits)  # [N, M, JX, d]
         h_a = softsel(h, tf.reduce_max(u_logits, 3))  # [N, M, d]
         h_a = tf.tile(tf.expand_dims(h_a, 2), [1, 1, JX, 1])
@@ -706,8 +709,8 @@ def bi_attention(config, is_train, h, u, h_mask=None, u_mask=None, scope=None, t
         if tensor_dict is not None:
             a_u = tf.nn.softmax(u_logits)  # [N, M, JX, JQ]
             a_h = tf.nn.softmax(tf.reduce_max(u_logits, 3))
-            tensor_dict['a_u'] = a_u
-            tensor_dict['a_h'] = a_h
+            tensor_dict['a_u'] = a_u  # C2Q
+            tensor_dict['a_h'] = a_h  # Q2C
             variables = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=tf.get_variable_scope().name)
             for var in variables:
                 tensor_dict[var.name] = var
@@ -720,11 +723,11 @@ def attention_layer(config, is_train, h, u, h_mask=None, u_mask=None, scope=None
         JX = tf.shape(h)[2]
         M = tf.shape(h)[1]
         JQ = tf.shape(u)[1]
-        if config.q2c_att or config.c2q_att:
+        if config.q2c_att or config.c2q_att: # yes
             u_a, h_a = bi_attention(config, is_train, h, u, h_mask=h_mask, u_mask=u_mask, tensor_dict=tensor_dict)
         if not config.c2q_att:
             u_a = tf.tile(tf.expand_dims(tf.expand_dims(tf.reduce_mean(u, 1), 1), 1), [1, M, JX, 1])
-        if config.q2c_att:
+        if config.q2c_att: # yes
             p0 = tf.concat([h, u_a, h * u_a, h * h_a], 3)
         else:
             p0 = tf.concat([h, u_a, h * u_a], 3)
